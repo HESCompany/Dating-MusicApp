@@ -1,11 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Optional
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.decomposition import TruncatedSVD
 import random
+from collections import Counter
+import tensorflow as tf
+from keras import layers, Model
 
 app = FastAPI()
 app.add_middleware(
@@ -16,22 +19,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Enhanced dummy dataset
+# Enhanced dataset with audio features
 def create_music_dataset():
+    n_songs = 50
     return {
-        'song_id': range(1, 51),
-        'title': [f'Song {i}' for i in range(1, 51)],
-        'artist': [f'Artist {i}' for i in range(1, 51)],
-        'tempo': np.random.randint(60, 180, 50),
-        'energy': np.random.random(50),
-        'danceability': np.random.random(50),
-        'popularity': np.random.randint(0, 100, 50),
-        'release_year': np.random.randint(1990, 2024, 50),
-        'genre': np.random.choice(['rock', 'pop', 'jazz', 'electronic', 'classical', 'hip-hop'], 50),
-        'mood': np.random.choice(['happy', 'sad', 'energetic', 'calm', 'aggressive'], 50)
+        'song_id': range(1, n_songs + 1),
+        'title': [f'Song {i}' for i in range(1, n_songs + 1)],
+        'artist': [f'Artist {i}' for i in range(1, n_songs + 1)],
+        'mfcc': [np.random.rand(13) for _ in range(n_songs)],  # Simulated MFCC features
+        'spectral': [np.random.rand(8) for _ in range(n_songs)],  # Simulated spectral features
+        'tempo': np.random.randint(60, 180, n_songs),
+        'energy': np.random.random(n_songs),
+        'danceability': np.random.random(n_songs),
+        'popularity': np.random.randint(0, 100, n_songs),
+        'genre': np.random.choice(['rock', 'pop', 'jazz', 'electronic', 'classical', 'hip-hop'], n_songs),
     }
 
-# Enhanced user dataset
 def create_user_dataset():
     users = []
     for i in range(1, 21):
@@ -39,7 +42,6 @@ def create_user_dataset():
             'user_id': i,
             'username': f'user_{i}',
             'favorite_genres': random.sample(['rock', 'pop', 'jazz', 'electronic', 'classical', 'hip-hop'], k=random.randint(1, 3)),
-            'preferred_mood': random.choice(['happy', 'sad', 'energetic', 'calm', 'aggressive']),
             'listening_history': random.sample(range(1, 51), k=random.randint(5, 15))
         })
     return users
@@ -49,129 +51,101 @@ df_songs = pd.DataFrame(create_music_dataset())
 users = create_user_dataset()
 df_users = pd.DataFrame(users)
 
-# Feature engineering
-def calculate_song_features(song_data):
-    features = song_data[['tempo', 'energy', 'danceability', 'popularity']].values
-    scaler = MinMaxScaler()
-    return scaler.fit_transform(features)
+# Neural Collaborative Filtering Model
+def create_ncf_model():
+    n_users = len(df_users)
+    n_songs = len(df_songs)
+    n_factors = 50
+    
+    user_input = layers.Input(shape=(1,))
+    song_input = layers.Input(shape=(1,))
+    
+    user_embedding = layers.Embedding(n_users + 1, n_factors)(user_input)
+    song_embedding = layers.Embedding(n_songs + 1, n_factors)(song_input)
+    
+    user_vec = layers.Flatten()(user_embedding)
+    song_vec = layers.Flatten()(song_embedding)
+    
+    concat = layers.Concatenate()([user_vec, song_vec])
+    dense1 = layers.Dense(128, activation='relu')(concat)
+    dense2 = layers.Dense(64, activation='relu')(dense1)
+    output = layers.Dense(1, activation='sigmoid')(dense2)
+    
+    model = Model(inputs=[user_input, song_input], outputs=output)
+    model.compile(optimizer='adam', loss='binary_crossentropy')
+    return model
 
-# Content-based recommendation
-def get_content_based_recommendations(song_id: int, n_recommendations: int = 5):
-    features = calculate_song_features(df_songs)
-    similarity = cosine_similarity(features)
+ncf_model = create_ncf_model()
+
+def get_hybrid_recommendations(user_id: int, n_recommendations: int = 5):
+    # Content-based features
+    audio_features = np.array([np.concatenate([s, f]) for s, f in zip(df_songs['mfcc'], df_songs['spectral'])])
+    content_similarity = cosine_similarity(audio_features)
     
-    song_idx = df_songs[df_songs['song_id'] == song_id].index[0]
-    similar_scores = list(enumerate(similarity[song_idx]))
-    similar_scores = sorted(similar_scores, key=lambda x: x[1], reverse=True)
+    # Collaborative filtering with SVD
+    user_history = df_users[df_users['user_id'] == user_id].iloc[0]['listening_history']
+    # Change n_components to match number of songs
+    svd = TruncatedSVD(n_components=min(len(df_songs), len(user_history)))
+    user_item_matrix = pd.crosstab(pd.Series(range(1, len(df_users) + 1)), pd.Series(user_history))
+    latent_features = svd.fit_transform(user_item_matrix)
     
+    # Neural CF predictions
+    user_ids = np.array([user_id] * len(df_songs))
+    song_ids = np.array(df_songs['song_id'])
+    ncf_predictions = ncf_model.predict([user_ids, song_ids])
+    
+    # Ensure all components have the same shape before combining
+    content_scores = content_similarity.mean(axis=0)
+    collab_scores = np.zeros(len(df_songs))
+    collab_scores[:len(latent_features[user_id-1])] = latent_features[user_id-1]
+    
+    # Combine predictions with matching shapes
+    final_scores = (0.4 * content_scores + 
+                   0.3 * collab_scores + 
+                   0.3 * ncf_predictions.flatten())
+    
+    # Get top recommendations
+    top_indices = final_scores.argsort()[-n_recommendations:][::-1]
     recommendations = []
-    for idx, score in similar_scores[1:n_recommendations+1]:
+    
+    for idx in top_indices:
         song = df_songs.iloc[idx]
         recommendations.append({
             'song_id': int(song['song_id']),
             'title': song['title'],
             'artist': song['artist'],
             'genre': song['genre'],
-            'similarity_score': float(score)
+            'similarity_score': float(final_scores[idx])
         })
+    
     return recommendations
 
-# Collaborative filtering
-def get_collaborative_recommendations(user_id: int, n_recommendations: int = 5):
-    user = df_users[df_users['user_id'] == user_id].iloc[0]
-    user_history = set(user['listening_history'])
-    favorite_genres = set(user['favorite_genres'])
-    
-    # Find similar users based on genre preferences
-    similar_users = df_users[df_users['user_id'] != user_id].apply(
-        lambda x: len(set(x['favorite_genres']) & favorite_genres) / len(favorite_genres),
-        axis=1
-    )
-    
-    # Get recommendations from similar users' history
-    recommendations = []
-    for similar_user_id in similar_users.nlargest(3).index:
-        similar_user = df_users.iloc[similar_user_id]
-        recommendations.extend([
-            song_id for song_id in similar_user['listening_history']
-            if song_id not in user_history
-        ])
-    
-    # Get unique recommendations and sort by popularity
-    recommendations = list(set(recommendations))
-    recommended_songs = df_songs[df_songs['song_id'].isin(recommendations)]
-    recommended_songs = recommended_songs.nlargest(n_recommendations, 'popularity')
-    
-    return recommended_songs.to_dict('records')
-
-# API Endpoints
 @app.get("/")
 def read_root():
     return {"message": "Hybrid Music Recommendation System API"}
 
-@app.get("/recommendations/content/{song_id}")
-def content_recommendations(song_id: int, n_recommendations: int = 5):
-    if song_id not in df_songs['song_id'].values:
-        raise HTTPException(status_code=404, detail="Song not found")
-    return get_content_based_recommendations(song_id, n_recommendations)
-
-@app.get("/recommendations/collaborative/{user_id}")
-def collaborative_recommendations(user_id: int, n_recommendations: int = 5):
+@app.get("/recommendations/{user_id}")
+def get_user_recommendations(user_id: int, n_recommendations: int = 5):
     if user_id not in df_users['user_id'].values:
         raise HTTPException(status_code=404, detail="User not found")
-    return get_collaborative_recommendations(user_id, n_recommendations)
-
-@app.get("/recommendations/hybrid/{user_id}")
-def hybrid_recommendations(user_id: int, n_recommendations: int = 5):
-    if user_id not in df_users['user_id'].values:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Combine both recommendation types
-    collaborative_recs = get_collaborative_recommendations(user_id, n_recommendations)
-    content_recs = []
-    
-    # Get content-based recommendations for the user's most recent song
-    user_history = df_users[df_users['user_id'] == user_id].iloc[0]['listening_history']
-    if user_history:
-        recent_song_id = user_history[-1]
-        content_recs = get_content_based_recommendations(recent_song_id, n_recommendations)
-    
-    # Combine and deduplicate recommendations
-    all_recs = collaborative_recs + content_recs
-    seen_songs = set()
-    unique_recs = []
-    
-    for rec in all_recs:
-        if rec['song_id'] not in seen_songs:
-            seen_songs.add(rec['song_id'])
-            unique_recs.append(rec)
-            if len(unique_recs) >= n_recommendations:
-                break
-    
-    return unique_recs
+    return get_hybrid_recommendations(user_id, n_recommendations)
 
 @app.get("/users/{user_id}")
 def get_user_profile(user_id: int):
     if user_id not in df_users['user_id'].values:
         raise HTTPException(status_code=404, detail="User not found")
-    return df_users[df_users['user_id'] == user_id].iloc[0].to_dict()
-
-@app.get("/songs/search")
-def search_songs(
-    genre: Optional[str] = None,
-    mood: Optional[str] = None,
-    min_year: Optional[int] = None,
-    max_year: Optional[int] = None
-):
-    filtered_songs = df_songs.copy()
+    user = df_users[df_users['user_id'] == user_id].iloc[0]
+    user_history = user['listening_history']
+    user_songs = df_songs[df_songs['song_id'].isin(user_history)]
     
-    if genre:
-        filtered_songs = filtered_songs[filtered_songs['genre'] == genre]
-    if mood:
-        filtered_songs = filtered_songs[filtered_songs['mood'] == mood]
-    if min_year:
-        filtered_songs = filtered_songs[filtered_songs['release_year'] >= min_year]
-    if max_year:
-        filtered_songs = filtered_songs[filtered_songs['release_year'] <= max_year]
-        
-    return filtered_songs.to_dict('records')
+    profile = {
+        'energy': user_songs['energy'].mean(),
+        'danceability': user_songs['danceability'].mean(),
+        'tempo': user_songs['tempo'].mean() / 180.0,  # Normalize tempo to 0-1 range
+        'popularity': user_songs['popularity'].mean() / 100.0  # Normalize popularity to 0-1 range
+    }
+    
+    user_data = user.to_dict()
+    user_data['profile'] = profile
+    
+    return user_data

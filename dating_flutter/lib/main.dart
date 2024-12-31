@@ -12,10 +12,14 @@ class MusicRecommenderApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Music Recommender',
+      title: 'Music Mood',
       theme: ThemeData(
-        primarySwatch: Colors.purple,
+        primarySwatch: Colors.deepPurple,
         brightness: Brightness.dark,
+        cardTheme: CardTheme(
+          elevation: 8,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        ),
       ),
       home: const HomePage(),
     );
@@ -33,8 +37,8 @@ class _HomePageState extends State<HomePage> {
   final String baseUrl = 'https://kj87tnfl-8000.asse.devtunnels.ms';
   List<dynamic> recommendations = [];
   Map<String, dynamic> userData = {};
+  Map<String, dynamic> userProfile = {};
   int currentUserId = 1;
-  String selectedRecommendationType = 'hybrid';
 
   @override
   void initState() {
@@ -44,10 +48,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> fetchUserData() async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/users/$currentUserId')
-    );
-    
+    final response = await http.get(Uri.parse('$baseUrl/users/$currentUserId'));
     if (response.statusCode == 200) {
       setState(() {
         userData = json.decode(response.body);
@@ -56,10 +57,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> fetchRecommendations() async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/recommendations/$selectedRecommendationType/$currentUserId')
-    );
-    
+    final response = await http.get(Uri.parse('$baseUrl/recommendations/$currentUserId'));
     if (response.statusCode == 200) {
       setState(() {
         recommendations = json.decode(response.body);
@@ -67,34 +65,65 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void updateUser(int newUserId) {
-    setState(() {
-      currentUserId = newUserId;
-    });
-    fetchUserData();
-    fetchRecommendations();
-  }
-
-  Widget buildUserCard() {
+  Widget buildMusicMetricsCard() {
     return Card(
-      margin: const EdgeInsets.all(16.0),
+      margin: const EdgeInsets.all(16),
       child: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Username: ${userData['username'] ?? ''}',
-              style: Theme.of(context).textTheme.titleLarge,
+              'Your Music Profile',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                color: Colors.deepPurpleAccent,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-            const SizedBox(height: 8),
-            Text('Preferred Mood: ${userData['preferred_mood'] ?? ''}'),
-            const SizedBox(height: 8),
-            Text('Favorite Genres: ${(userData['favorite_genres'] as List?)?.join(', ') ?? ''}'),
-            const SizedBox(height: 8),
-            Text('Listening History Count: ${(userData['listening_history'] as List?)?.length ?? 0} songs'),
+            const SizedBox(height: 16),
+            buildMetricRow('Energy', userData['profile']?['energy'] ?? 0),
+            buildMetricRow('Danceability', userData['profile']?['danceability'] ?? 0),
+            buildMetricRow('Tempo', userData['profile']?['tempo'] ?? 0),
+            buildMetricRow('Popularity', userData['profile']?['popularity'] ?? 0),
+            const Divider(height: 32),
+            Text(
+              'Favorite Genres',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            Wrap(
+              spacing: 8,
+              children: (userData['favorite_genres'] as List<dynamic>? ?? [])
+                  .map((genre) => Chip(
+                        label: Text(genre),
+                        backgroundColor: Colors.deepPurple.withOpacity(0.2),
+                      ))
+                  .toList(),
+            ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget buildMetricRow(String label, double value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.grey)),
+          const SizedBox(height: 4),
+          LinearProgressIndicator(
+            value: value,
+            backgroundColor: Colors.grey.withOpacity(0.2),
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.deepPurpleAccent),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          Text(
+            '${(value * 100).toStringAsFixed(1)}%',
+            style: const TextStyle(fontSize: 12),
+          ),
+        ],
       ),
     );
   }
@@ -103,100 +132,70 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Music Recommender'),
+        title: const Text('Music Mood'),
         actions: [
-          PopupMenuButton<String>(
-            onSelected: (String value) {
-              setState(() {
-                selectedRecommendationType = value;
-                fetchRecommendations();
-              });
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              fetchUserData();
+              fetchRecommendations();
             },
-            itemBuilder: (BuildContext context) => [
-              const PopupMenuItem(
-                value: 'hybrid',
-                child: Text('Hybrid'),
-              ),
-              const PopupMenuItem(
-                value: 'content',
-                child: Text('Content-based'),
-              ),
-              const PopupMenuItem(
-                value: 'collaborative',
-                child: Text('Collaborative'),
-              ),
-            ],
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Row(
-              children: [
-                Text('User ID: $currentUserId'),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.remove),
-                  onPressed: () {
-                    if (currentUserId > 1) {
-                      updateUser(currentUserId - 1);
-                    }
-                  },
-                ),
-                IconButton(
-                  icon: const Icon(Icons.add),
-                  onPressed: () {
-                    updateUser(currentUserId + 1);
-                  },
-                ),
-              ],
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await fetchUserData();
+          await fetchRecommendations();
+        },
+        child: ListView(
+          children: [
+            buildMusicMetricsCard(),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Recommended for You',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
             ),
-          ),
-          buildUserCard(),
-          const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Text(
-              'Recommendations',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-          ),
-          Expanded(
-            child: ListView.builder(
-              itemCount: recommendations.length,
-              itemBuilder: (context, index) {
-                final recommendation = recommendations[index];
-                return ListTile(
-                  leading: CircleAvatar(
-                    child: Text(recommendation['song_id'].toString()),
-                  ),
-                  title: Text(recommendation['title']),
-                  subtitle: Text(recommendation['artist']),
-                  trailing: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(recommendation['genre']),
-                      if (recommendation['similarity_score'] != null)
+            ...recommendations.map((rec) => Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: Colors.deepPurple.withOpacity(0.2),
+                      child: Icon(Icons.music_note, color: Colors.deepPurpleAccent),
+                    ),
+                    title: Text(rec['title']),
+                    subtitle: Text(rec['artist']),
+                    trailing: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(rec['genre']),
                         Text(
-                          'Score: ${recommendation['similarity_score'].toStringAsFixed(2)}',
-                          style: const TextStyle(fontSize: 12),
+                          'Match: ${(rec['similarity_score'] * 100).toStringAsFixed(0)}%',
+                          style: TextStyle(
+                            color: Colors.greenAccent,
+                            fontSize: 12,
+                          ),
                         ),
-                    ],
+                      ],
+                    ),
                   ),
-                );
-              },
-            ),
-          ),
-        ],
+                )),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {
-          fetchUserData();
-          fetchRecommendations();
+          setState(() {
+            currentUserId = (currentUserId % 20) + 1;
+            fetchUserData();
+            fetchRecommendations();
+          });
         },
-        child: const Icon(Icons.refresh),
+        child: const Icon(Icons.skip_next),
+        backgroundColor: Colors.deepPurpleAccent,
       ),
     );
   }
