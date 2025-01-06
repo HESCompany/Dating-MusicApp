@@ -1,0 +1,8 @@
+Heryawan Eko Saputro - A11.2022.14237
+Fuad Ali Rahman - ???.????.?????
+
+cara run aplikasi flutter :
+- flutter run -d web-server --web-port=3000 --web-hostname=0.0.0.0
+
+cara run python api :
+- uvicorn dating:app --reload
