@@ -1,5 +1,5 @@
 Heryawan Eko Saputro - A11.2022.14237
-Fuad Ali Rahman - ???.????.?????
+Fuad Ali Rahman - A11.2022.14645
 
 cara run aplikasi flutter :
 - flutter run -d web-server --web-port=3000 --web-hostname=0.0.0.0
